@@ -1229,6 +1229,9 @@
                 <button type="button" class="btn btn-ghost" id="newInvoiceBtn"
                   >New Invoice</button
                 >
+                <button type="button" class="btn btn-ghost" id="recentDocsBtn"
+                  >Recent Documents</button
+                >
               </div>
 
               <div class="btn-row" style="margin-bottom: 16px">
@@ -1289,7 +1292,9 @@
                     type="text"
                     id="clientName"
                     class="form-input"
-                    placeholder="Enter client name" />
+                    placeholder="Enter client name"
+                    list="clientHistory" />
+                  <datalist id="clientHistory"></datalist>
                 </div>
                 <div class="form-grid form-grid-2">
                   <div class="form-group">
@@ -1372,7 +1377,7 @@
                   <span class="label">Total Pages</span>
                   <span class="value" id="pvTotalPages">0</span>
                 </div>
-                <div class="summary-row">
+                <div class="summary-row" id="subtotalRowContainer">
                   <span class="label">Subtotal</span>
                   <span class="value" id="pvSubtotal">₱0.00</span>
                 </div>
@@ -1389,6 +1394,15 @@
                     style="color: var(--success)"
                     >-₱0.00</span
                   >
+                </div>
+                <div
+                  class="summary-row"
+                  id="vatRowContainer"
+                  style="display: none">
+                  <span class="label"
+                    >Tax/VAT (<span id="pvVatPercent">12</span>%)</span
+                  >
+                  <span class="value" id="pvVatAmount">₱0.00</span>
                 </div>
                 <div class="summary-row summary-total">
                   <span class="label">Grand Total</span>
@@ -1488,6 +1502,19 @@
                 placeholder="3.00" />
               <span class="form-hint"
                 >Default price applied to new documents</span
+              >
+            </div>
+
+            <div class="form-group" style="margin-bottom: 20px">
+              <label class="form-label">Tax/VAT Percentage (%)</label>
+              <input
+                type="text"
+                id="vatPercent"
+                class="form-input"
+                inputmode="decimal"
+                placeholder="12" />
+              <span class="form-hint"
+                >Applied to invoice total after discounts</span
               >
             </div>
 
@@ -1672,6 +1699,37 @@
       </div>
     </div>
 
+    <!-- Recent Documents Modal -->
+    <div class="modal-overlay" id="recentDocsModal">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>Recent Documents</h3>
+          <button type="button" class="modal-close" id="closeRecentDocs">
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div id="recentDocsList" style="max-height: 400px; overflow-y: auto">
+            <div class="empty-state"><p>No recent documents</p></div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn" id="closeRecentDocsBtn"
+            >Close</button
+          >
+        </div>
+      </div>
+    </div>
+
     <!-- Confirm Modal -->
     <div class="modal-overlay" id="confirmModal">
       <div class="modal" style="max-width: 400px">
@@ -1817,6 +1875,7 @@
         ],
         roundToPeso: false,
         colorCodeRows: true,
+        vatPercent: 12,
       };
 
       let analytics = {
@@ -1827,6 +1886,12 @@
         clients: {},
         topDocs: [],
       };
+
+      // Recent clients and documents
+      const RECENT_CLIENTS_KEY = "invoice_recent_clients_v1";
+      const RECENT_DOCS_KEY = "invoice_recent_docs_v1";
+      let recentClients = [];
+      let recentDocuments = [];
 
       function loadSettings() {
         try {
@@ -1854,6 +1919,48 @@
 
       function saveAnalytics() {
         localStorage.setItem(ANALYTICS_KEY, JSON.stringify(analytics));
+      }
+
+      function loadRecentClients() {
+        try {
+          const raw = localStorage.getItem(RECENT_CLIENTS_KEY);
+          recentClients = raw ? JSON.parse(raw) : [];
+        } catch {}
+      }
+
+      function saveRecentClients() {
+        localStorage.setItem(RECENT_CLIENTS_KEY, JSON.stringify(recentClients));
+      }
+
+      function addRecentClient(name) {
+        if (!name || !name.trim()) return;
+        const trimmed = name.trim();
+        recentClients = recentClients.filter((c) => c !== trimmed);
+        recentClients.unshift(trimmed);
+        recentClients = recentClients.slice(0, 10); // Keep only 10 recent
+        saveRecentClients();
+      }
+
+      function loadRecentDocuments() {
+        try {
+          const raw = localStorage.getItem(RECENT_DOCS_KEY);
+          recentDocuments = raw ? JSON.parse(raw) : [];
+        } catch {}
+      }
+
+      function saveRecentDocuments() {
+        localStorage.setItem(RECENT_DOCS_KEY, JSON.stringify(recentDocuments));
+      }
+
+      function addRecentDocument(name, ext, pages) {
+        if (!name || !ext) return;
+        const doc = { name, ext, pages, date: new Date().toISOString() };
+        recentDocuments = recentDocuments.filter(
+          (d) => d.name !== name || d.ext !== ext,
+        );
+        recentDocuments.unshift(doc);
+        recentDocuments = recentDocuments.slice(0, 20); // Keep only 20 recent
+        saveRecentDocuments();
       }
 
       // ===== Money Formatting =====
@@ -1960,18 +2067,25 @@
         );
 
         // Apply tiered discount if applicable
-        let grandTotal = baseTotal;
+        let discountedTotal = baseTotal;
+        let appliedDiscount = 0;
         if (settings.tiers.length > 0) {
-          const discountPercent = getDiscountForPages(totalPages);
-          grandTotal = applyDiscountToTotal(baseTotal, discountPercent);
+          appliedDiscount = getDiscountForPages(totalPages);
+          discountedTotal = applyDiscountToTotal(baseTotal, appliedDiscount);
         }
+
+        // Apply VAT on the discounted total
+        const vatAmount = discountedTotal * (settings.vatPercent / 100);
+        const grandTotal = discountedTotal + vatAmount;
 
         return {
           totalPages,
           grandTotal,
           baseTotal,
-          appliedDiscount:
-            settings.tiers.length > 0 ? getDiscountForPages(totalPages) : 0,
+          discountedTotal,
+          appliedDiscount: settings.tiers.length > 0 ? appliedDiscount : 0,
+          vatAmount,
+          vatPercent: settings.vatPercent,
         };
       }
 
@@ -2084,12 +2198,22 @@
         // Show discount if applicable
         const discountContainer = $("discountRowContainer");
         if (t.appliedDiscount > 0) {
-          const discountAmount = t.baseTotal - t.grandTotal;
+          const discountAmount = t.baseTotal - t.discountedTotal;
           $("pvDiscountPercent").textContent = t.appliedDiscount;
           $("pvDiscountAmount").textContent = "-" + money(discountAmount);
           discountContainer.style.display = "flex";
         } else {
           discountContainer.style.display = "none";
+        }
+
+        // Show VAT if applicable
+        const vatContainer = $("vatRowContainer");
+        if (t.vatAmount > 0) {
+          $("pvVatPercent").textContent = t.vatPercent;
+          $("pvVatAmount").textContent = "+" + money(t.vatAmount);
+          vatContainer.style.display = "flex";
+        } else {
+          vatContainer.style.display = "none";
         }
 
         saveDraft();
@@ -2514,6 +2638,9 @@
               `${strippedName}${sizeLabel}${colorLabel} — ${doc.pages} page(s) @ ₱${doc.pricePerPage.toFixed(2)}/page`,
             );
 
+            // Track recent documents
+            addRecentDocument(stripFilename(f.name), ext, doc.pages);
+
             analytics.docsProcessed++;
             saveAnalytics();
           } catch (e) {
@@ -2536,12 +2663,28 @@
       // ===== Export =====
       async function invoiceToPngBlob() {
         if (!window.html2canvas) throw new Error("html2canvas not loaded");
-        const canvas = await window.html2canvas($("invoiceArea"), {
-          backgroundColor: "#ffffff",
-          scale: 2,
-          useCORS: true,
-        });
-        return await new Promise((res) => canvas.toBlob(res, "image/png"));
+
+        // Hide subtotal and VAT rows for export (user requested not to include in image)
+        const subtotalContainer = $("subtotalRowContainer");
+        const vatContainer = $("vatRowContainer");
+        const subtotalWasVisible = subtotalContainer.style.display !== "none";
+        const vatWasVisible = vatContainer.style.display !== "none";
+
+        if (subtotalWasVisible) subtotalContainer.style.display = "none";
+        if (vatWasVisible) vatContainer.style.display = "none";
+
+        try {
+          const canvas = await window.html2canvas($("invoiceArea"), {
+            backgroundColor: "#ffffff",
+            scale: 2,
+            useCORS: true,
+          });
+          return await new Promise((res) => canvas.toBlob(res, "image/png"));
+        } finally {
+          // Restore rows
+          if (subtotalWasVisible) subtotalContainer.style.display = "flex";
+          if (vatWasVisible) vatContainer.style.display = "flex";
+        }
       }
 
       async function exportPng() {
@@ -2993,6 +3136,7 @@
 
       function updateSettingsUI() {
         $("basePricePerPage").value = settings.basePricePerPage;
+        $("vatPercent").value = settings.vatPercent;
         $("toggleRoundPeso").className = settings.roundToPeso
           ? "toggle active"
           : "toggle";
@@ -3000,6 +3144,40 @@
           ? "toggle active"
           : "toggle";
         renderTiers();
+        renderClientHistory();
+      }
+
+      function renderClientHistory() {
+        const datalist = $("clientHistory");
+        datalist.innerHTML = "";
+        recentClients.forEach((client) => {
+          const option = document.createElement("option");
+          option.value = client;
+          datalist.appendChild(option);
+        });
+      }
+
+      function renderRecentDocuments() {
+        const container = $("recentDocsList");
+        if (!recentDocuments || recentDocuments.length === 0) {
+          container.innerHTML = `<div class="empty-state"><p>No recent documents</p></div>`;
+          return;
+        }
+
+        container.innerHTML = recentDocuments
+          .map(
+            (doc) => `
+            <div class="analytics-list-item" style="padding: 12px 0; border-bottom: 1px solid var(--gray-100);">
+              <div style="flex: 1;">
+                <div style="font-weight: 500; margin-bottom: 4px;">${escapeHtml(doc.name)}</div>
+                <div style="font-size: 0.8rem; color: var(--gray-500);">
+                  ${doc.ext.toUpperCase()} • ${doc.pages} pages • ${formatDateTime(doc.date)}
+                </div>
+              </div>
+            </div>
+          `,
+          )
+          .join("");
       }
 
       // Detail panel controls: minimize / maximize / close
@@ -3140,6 +3318,12 @@
 
         $("sortSelect").addEventListener("change", () => render());
 
+        // Client name tracking
+        $("clientName").addEventListener("change", () => {
+          addRecentClient($("clientName").value);
+          renderClientHistory();
+        });
+
         ["clientName", "invoiceDate", "remarks"].forEach((id) => {
           $(id).addEventListener("input", () => {
             render();
@@ -3257,6 +3441,12 @@
           saveSettings();
         });
 
+        $("vatPercent").addEventListener("input", (e) => {
+          settings.vatPercent = parseNumber(e.target.value);
+          saveSettings();
+          render();
+        });
+
         $("toggleRoundPeso").addEventListener("click", () => {
           settings.roundToPeso = !settings.roundToPeso;
           $("toggleRoundPeso").className = settings.roundToPeso
@@ -3324,6 +3514,19 @@
         );
         $("closeOrdersBtn").addEventListener("click", () =>
           closeModal("ordersModal"),
+        );
+
+        // Recent Documents Modal
+        $("recentDocsBtn").addEventListener("click", () => {
+          renderRecentDocuments();
+          openModal("recentDocsModal");
+        });
+
+        $("closeRecentDocs").addEventListener("click", () =>
+          closeModal("recentDocsModal"),
+        );
+        $("closeRecentDocsBtn").addEventListener("click", () =>
+          closeModal("recentDocsModal"),
         );
 
         // Export / Place Order button (in Export Options)
@@ -3432,6 +3635,8 @@
         loadSettings();
         loadAnalytics();
         loadOrders();
+        loadRecentClients();
+        loadRecentDocuments();
 
         $("invoiceDate").value = todayISO();
         loadDraft();
