@@ -1810,7 +1810,11 @@
 
       let settings = {
         basePricePerPage: 3,
-        tiers: [],
+        tiers: [
+          { threshold: 30, discount: 5 },
+          { threshold: 60, discount: 10 },
+          { threshold: 100, discount: 12 },
+        ],
         roundToPeso: false,
         colorCodeRows: true,
       };
@@ -2401,40 +2405,10 @@
         // Remove extension
         let name = filename.replace(/\.[^.]+$/, "");
 
-        // Remove everything in parentheses/brackets with numbers: (1), [2024], etc
-        name = name.replace(/[\[\(][^\[\]()]*\d[^\[\]()]*[\]\)]/g, "");
-
-        // Remove UUID patterns
-        name = name.replace(
-          /[a-f0-9]{8}-?[a-f0-9]{4}-?[a-f0-9]{4}-?[a-f0-9]{4}-?[a-f0-9]{12}/gi,
-          "",
-        );
-
-        // Remove ISO timestamps
-        name = name.replace(/\d{4}-\d{2}-\d{2}[T_\s]\d{2}:\d{2}:\d{2}/gi, "");
-
-        // Remove long hex strings (20+ chars of hex)
-        name = name.replace(/[a-f0-9]{20,}/gi, "");
-
-        // Remove long random alphanumeric sequences (15+ chars)
-        name = name.replace(/[a-zA-Z0-9]{15,}/g, (match) => {
-          // Keep if it has mostly same character (like "111" or "aaa")
-          const charSet = new Set(match);
-          return charSet.size <= 2 ? match : "";
-        });
-
-        // Remove leading/trailing numbers and underscores
-        name = name.replace(/^[\d_\-]+/, "").replace(/[\d_\-]+$/, "");
-
         // Clean up separators: multiple spaces/underscores/dashes to single space
         name = name.replace(/[\s_\-]+/g, " ").trim();
 
-        // If nothing left, use original filename without extension
-        if (!name || name.length < 2) {
-          name = filename.replace(/\.[^.]+$/, "");
-        }
-
-        // Aggressive truncate
+        // Truncate if too long
         if (name.length > maxLength) {
           // Try to cut at a word boundary
           let truncated = name.substring(0, maxLength - 1);
@@ -3076,6 +3050,64 @@
           console.error("File input element not found");
         }
 
+        // Drag and drop support
+        const uploadBtn = $("uploadBtn");
+        const docsTable = $("docsTable");
+        const sectionBody = uploadBtn?.closest(".section-body");
+        const dropZones = [uploadBtn, docsTable, sectionBody].filter(Boolean);
+
+        function handleDragOver(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          e.dataTransfer.dropEffect = "copy";
+          if (sectionBody) {
+            sectionBody.style.backgroundColor = "rgba(37, 99, 235, 0.05)";
+            sectionBody.style.borderTop = "2px dashed var(--accent)";
+            sectionBody.style.borderRadius = "var(--radius-lg)";
+          }
+        }
+
+        function handleDragLeave(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (sectionBody) {
+            sectionBody.style.backgroundColor = "";
+            sectionBody.style.borderTop = "";
+            sectionBody.style.borderRadius = "";
+          }
+        }
+
+        function handleDrop(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (sectionBody) {
+            sectionBody.style.backgroundColor = "";
+            sectionBody.style.borderTop = "";
+            sectionBody.style.borderRadius = "";
+          }
+          const files = e.dataTransfer?.files;
+          if (files && files.length > 0) {
+            addFiles(files);
+          }
+        }
+
+        // Add event listeners to all drop zones
+        dropZones.forEach((zone) => {
+          zone.addEventListener("dragover", handleDragOver);
+          zone.addEventListener("dragenter", handleDragOver);
+          zone.addEventListener("dragleave", handleDragLeave);
+          zone.addEventListener("drop", handleDrop);
+        });
+
+        // Also add to document body for whole page drag-drop
+        document.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "copy";
+        });
+        document.addEventListener("drop", (e) => {
+          e.preventDefault();
+        });
+
         $("clearBtn").addEventListener("click", async () => {
           const confirmed = await showConfirm(
             "Clear All Documents",
@@ -3116,6 +3148,7 @@
         });
 
         // Update document fields (pages / price) when edited inline
+        let inputDebounceTimer = null;
         $("tbody").addEventListener("input", (e) => {
           if (!(e.target instanceof HTMLInputElement)) return;
           const id = e.target.dataset.id;
@@ -3125,7 +3158,26 @@
           const v = parseNumber(e.target.value);
           if (field === "pages") doc.pages = Math.max(0, Math.floor(v));
           if (field === "pricePerPage") doc.pricePerPage = Math.max(0, v);
-          render();
+
+          // Clear previous timer
+          if (inputDebounceTimer) clearTimeout(inputDebounceTimer);
+
+          // Store the focused element and cursor position
+          const focusedElement = document.activeElement;
+          const cursorPos = focusedElement?.selectionStart || 0;
+
+          // Debounce render to avoid losing focus while typing
+          inputDebounceTimer = setTimeout(() => {
+            render();
+            // Restore focus if the field still exists
+            if (focusedElement && focusedElement.parentElement) {
+              focusedElement.focus();
+              if (focusedElement.setSelectionRange) {
+                focusedElement.setSelectionRange(cursorPos, cursorPos);
+              }
+            }
+            inputDebounceTimer = null;
+          }, 100);
         });
 
         // Handle clicks inside the docs table (remove button)
